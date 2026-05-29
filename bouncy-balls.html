@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>BOUNCY · 弹球消砖块</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Chakra+Petch:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0e1f;
+    --bg2:#121838;
+    --cyan:#3df2ff;
+    --pink:#ff4d8d;
+    --amber:#ffb13d;
+    --ink:#e8ecff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #1b2350 0%, transparent 60%),
+      radial-gradient(800px 500px at 90% 110%, #2a1140 0%, transparent 55%),
+      var(--bg);
+    color:var(--ink);
+    font-family:"Chakra Petch",sans-serif;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-height:100%;padding:14px;gap:12px;overflow:hidden;
+  }
+  .frame{
+    width:min(94vw, 440px);
+    display:flex;flex-direction:column;gap:10px;
+  }
+  header{display:flex;align-items:flex-end;justify-content:space-between;}
+  h1{
+    font-family:"Bungee",cursive;font-size:clamp(22px,7vw,34px);
+    letter-spacing:1px;line-height:.9;
+    background:linear-gradient(180deg,#fff,var(--cyan));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:0 0 22px rgba(61,242,255,.35);
+  }
+  h1 span{color:var(--pink);-webkit-text-fill-color:var(--pink);text-shadow:0 0 22px rgba(255,77,141,.4);}
+  .scores{display:flex;gap:16px;text-align:right;}
+  .scores .lab{font-size:10px;letter-spacing:2px;opacity:.55;text-transform:uppercase;}
+  .scores .val{font-family:"Bungee",cursive;font-size:20px;line-height:1;}
+  #hi .val{color:var(--amber);}
+  .stage{
+    position:relative;width:100%;
+    border-radius:16px;overflow:hidden;
+    box-shadow:0 0 0 1px rgba(61,242,255,.18), 0 24px 60px rgba(0,0,0,.55), inset 0 0 80px rgba(10,14,31,.6);
+    background:linear-gradient(180deg,#0c1126,#0a0e1f);
+    touch-action:none;cursor:crosshair;
+  }
+  canvas{display:block;width:100%;height:auto;}
+  .overlay{
+    position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:14px;text-align:center;
+    background:rgba(8,11,26,.82);backdrop-filter:blur(6px);padding:24px;
+    transition:opacity .25s;
+  }
+  .overlay.hidden{opacity:0;pointer-events:none;}
+  .overlay h2{font-family:"Bungee",cursive;font-size:clamp(26px,9vw,42px);
+    background:linear-gradient(180deg,#fff,var(--pink));-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .overlay p{max-width:300px;font-size:14px;line-height:1.55;opacity:.82;}
+  .overlay .big{font-family:"Bungee",cursive;font-size:30px;color:var(--amber);}
+  button{
+    font-family:"Bungee",cursive;font-size:16px;letter-spacing:1px;
+    color:#06101f;background:linear-gradient(180deg,var(--cyan),#1cc7d8);
+    border:none;border-radius:999px;padding:14px 30px;cursor:pointer;
+    box-shadow:0 8px 24px rgba(61,242,255,.35), inset 0 1px 0 rgba(255,255,255,.6);
+    transition:transform .08s, box-shadow .2s;
+  }
+  button:active{transform:translateY(2px) scale(.98);}
+  .hint{font-size:12px;text-align:center;opacity:.5;letter-spacing:.5px;}
+</style>
+</head>
+<body>
+  <div class="frame">
+    <header>
+      <h1>BOUN<span>CY</span></h1>
+      <div class="scores">
+        <div id="cur"><div class="lab">Score</div><div class="val">0</div></div>
+        <div id="hi"><div class="lab">Best</div><div class="val">0</div></div>
+      </div>
+    </header>
+
+    <div class="stage" id="stage">
+      <canvas id="game"></canvas>
+      <div class="overlay" id="overlay">
+        <h2 id="ovTitle">BOUNCY</h2>
+        <p id="ovText">瞄准发射一串小球，敲掉上方带数字的方块。<br>橙色的 <b style="color:var(--amber)">+1</b> 球能让你下回合多一颗球，越攒越多！<br>别让方块压到底线。</p>
+        <button id="startBtn">开始游戏</button>
+      </div>
+    </div>
+    <div class="hint">按住拖动瞄准 · 松手发射 · 桌面端也可用鼠标</div>
+  </div>
+
+<script>
+(() => {
+  const cvs = document.getElementById('game');
+  const ctx = cvs.getContext('2d');
+  const stage = document.getElementById('stage');
+  const overlay = document.getElementById('overlay');
+  const ovTitle = document.getElementById('ovTitle');
+  const ovText = document.getElementById('ovText');
+  const startBtn = document.getElementById('startBtn');
+  const curEl = document.querySelector('#cur .val');
+  const hiEl = document.querySelector('#hi .val');
+
+  // ---- logical resolution (portrait) ----
+  const COLS = 10;
+  const W = 480;
+  const CELL = W / COLS;            // 48
+  const H = 720;
+  const ROWS_TOP = 0;               // first row flush to ceiling (no gap channel)
+  const LAUNCH_Y = H - 26;          // launcher line
+  const BALL_R = 8;
+  const SPEED = 12;
+  const cvsScale = 2;               // crispness
+  cvs.width = W * cvsScale;
+  cvs.height = H * cvsScale;
+  cvs.style.aspectRatio = W + '/' + H;
+  ctx.scale(cvsScale, cvsScale);
+
+  // ---- state ----
+  let blocks = [];     // {x,y,hp,kind:'block'|'plus'}
+  let balls = [];
+  let state = 'idle';  // idle | aim | fire | resolve | over
+  let score = 0, hi = 0, turn = 0;
+  let launchX = W/2;
+  let nextLaunchX = null;
+  let ballCount = 1;
+  let pendingExtra = 0;
+  let aim = null;      // {x,y} pointer while aiming
+  let fireQueue = 0, fireTimer = 0;
+  let firstReturn = null;
+  let popups = [];     // floating score text {x,y,life,val}
+
+  // ---- audio: tiny Web Audio blip on collision (no external files) ----
+  let actx = null, lastBlip = 0;
+  function initAudio(){
+    if(actx) return;
+    try { actx = new (window.AudioContext||window.webkitAudioContext)(); } catch(e){ actx=null; }
+  }
+  function blip(hp){
+    if(!actx) return;
+    const now = actx.currentTime;
+    if(now - lastBlip < 0.018) return;   // throttle to avoid machine-gun noise
+    lastBlip = now;
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    // higher pitch for tougher (higher number) blocks
+    const base = 220 + Math.min(12, hp) * 42;
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(base, now);
+    o.frequency.exponentialRampToValueAtTime(base*0.6, now+0.08);
+    g.gain.setValueAtTime(0.16, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now+0.10);
+    o.connect(g); g.connect(actx.destination);
+    o.start(now); o.stop(now+0.11);
+  }
+
+  try { hi = parseInt(localStorage.getItem('bouncy_hi')||'0',10)||0; } catch(e){}
+  hiEl.textContent = hi;
+
+  function reset(){
+    blocks = []; balls = []; popups = []; score = 0; turn = 0;
+    launchX = W/2; nextLaunchX = null; ballCount = 1; pendingExtra = 0;
+    curEl.textContent = 0;
+    spawnRow();
+    state = 'aim';
+  }
+
+  // spawn a fresh row at top, push existing down
+  function spawnRow(){
+    turn++;
+    for(const b of blocks) b.y += CELL;
+    const maxHp = Math.max(1, Math.floor(turn * 0.7) + 1);
+    let placed = 0;
+    for(let c=0;c<COLS;c++){
+      const r = Math.random();
+      if(r < 0.62){
+        const hp = 1 + Math.floor(Math.random()*maxHp);
+        blocks.push({kind:'block', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2, hp, hpMax:hp});
+        placed++;
+      } else if(r < 0.78){
+        blocks.push({kind:'plus', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2});
+      }
+    }
+    if(placed===0){ // guarantee at least one block
+      const c = Math.floor(Math.random()*COLS);
+      blocks.push({kind:'block', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2, hp:1, hpMax:1});
+    }
+  }
+
+  function blockHpColor(b){
+    const t = Math.min(1, (b.hp-1)/14);
+    const hue = 158 - t*158;        // green -> red
+    return `hsl(${hue},85%,55%)`;
+  }
+
+  // ---- input ----
+  function ptr(e){
+    const rect = cvs.getBoundingClientRect();
+    const cx = (e.touches?e.touches[0].clientX:e.clientX) - rect.left;
+    const cy = (e.touches?e.touches[0].clientY:e.clientY) - rect.top;
+    return { x: cx/rect.width*W, y: cy/rect.height*H };
+  }
+  function onDown(e){ if(state!=='aim') return; e.preventDefault(); aim = ptr(e); }
+  function onMove(e){ if(state!=='aim'||!aim) return; e.preventDefault(); aim = ptr(e); }
+  function onUp(e){
+    if(state!=='aim'||!aim){ aim=null; return; }
+    e.preventDefault();
+    const dir = aimDir();
+    aim = null;
+    if(!dir) return;
+    // begin firing
+    balls = [];
+    fireQueue = ballCount;
+    fireTimer = 0;
+    firstReturn = null;
+    fireVel = dir;
+    state = 'fire';
+  }
+  let fireVel = {x:0,y:-1};
+
+  function aimDir(){
+    if(!aim) return null;
+    let dx = aim.x - launchX;
+    let dy = aim.y - LAUNCH_Y;
+    if(dy > -8) dy = -8;            // never shoot downward/flat
+    const len = Math.hypot(dx,dy);
+    if(len < 6) return null;
+    return { x: dx/len, y: dy/len };
+  }
+
+  stage.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  stage.addEventListener('touchstart', onDown, {passive:false});
+  stage.addEventListener('touchmove', onMove, {passive:false});
+  stage.addEventListener('touchend', onUp, {passive:false});
+
+  startBtn.addEventListener('click', () => {
+    initAudio();
+    if(actx && actx.state==='suspended') actx.resume();
+    overlay.classList.add('hidden');
+    reset();
+  });
+
+  // ---- physics ----
+  function stepBall(ball){
+    const sub = Math.ceil(SPEED);
+    for(let s=0;s<sub;s++){
+      ball.x += ball.vx/sub;
+      ball.y += ball.vy/sub;
+      // walls
+      if(ball.x < BALL_R){ ball.x=BALL_R; ball.vx=Math.abs(ball.vx); }
+      if(ball.x > W-BALL_R){ ball.x=W-BALL_R; ball.vx=-Math.abs(ball.vx); }
+      if(ball.y < BALL_R){ ball.y=BALL_R; ball.vy=Math.abs(ball.vy); }
+      // blocks
+      for(const b of blocks){
+        const half = CELL/2 - 3;
+        const nx = Math.max(b.x-half, Math.min(ball.x, b.x+half));
+        const ny = Math.max(b.y-half, Math.min(ball.y, b.y+half));
+        const ddx = ball.x-nx, ddy = ball.y-ny;
+        const d2 = ddx*ddx+ddy*ddy;
+        if(d2 < BALL_R*BALL_R){
+          if(b.kind==='plus'){
+            if(!b.dead){
+              b.dead=true; pendingExtra++;
+              if(actx){
+                const now=actx.currentTime;
+                const o=actx.createOscillator(), g=actx.createGain();
+                o.type='sine'; o.frequency.setValueAtTime(660,now);
+                o.frequency.exponentialRampToValueAtTime(1180,now+0.12);
+                g.gain.setValueAtTime(0.12,now);
+                g.gain.exponentialRampToValueAtTime(0.0001,now+0.14);
+                o.connect(g); g.connect(actx.destination); o.start(now); o.stop(now+0.15);
+              }
+            }
+            continue;
+          }
+          // reflect on least-penetration axis
+          const overlapX = half + BALL_R - Math.abs(ball.x-b.x);
+          const overlapY = half + BALL_R - Math.abs(ball.y-b.y);
+          if(overlapX < overlapY){
+            ball.vx = -ball.vx;
+            ball.x += (ball.x<b.x?-1:1)*overlapX;
+          } else {
+            ball.vy = -ball.vy;
+            ball.y += (ball.y<b.y?-1:1)*overlapY;
+          }
+          b.hp--;
+          blip(b.hp+1);
+          if(b.hp<=0){
+            b.dead=true;
+            const gain = 1 + (b.hpMax||1);   // tougher blocks score more
+            score += gain; curEl.textContent=score;
+            popups.push({x:b.x, y:b.y, life:1, val:'+'+gain});
+          }
+        }
+      }
+    }
+    if(ball.y > LAUNCH_Y + BALL_R){
+      ball.done = true;
+      if(firstReturn===null) firstReturn = Math.max(BALL_R, Math.min(W-BALL_R, ball.x));
+    }
+  }
+
+  function update(){
+    if(state==='fire'){
+      // spawn balls over time
+      fireTimer--;
+      if(fireQueue>0 && fireTimer<=0){
+        balls.push({ x:launchX, y:LAUNCH_Y-BALL_R, vx:fireVel.x*SPEED, vy:fireVel.y*SPEED, done:false });
+        fireQueue--;
+        fireTimer = 4;
+      }
+      for(const b of balls){ if(!b.done) stepBall(b); }
+      blocks = blocks.filter(b=>!b.dead);
+      if(fireQueue===0 && balls.every(b=>b.done)){
+        // end of turn
+        if(firstReturn!==null) launchX = firstReturn;
+        ballCount += pendingExtra; pendingExtra = 0;
+        balls = [];
+        state = 'resolve';
+        resolveTimer = 6;
+      }
+    } else if(state==='resolve'){
+      resolveTimer--;
+      if(resolveTimer<=0){
+        spawnRow();
+        // game over check
+        for(const b of blocks){
+          if(b.kind==='block' && b.y + CELL/2 >= LAUNCH_Y - 4){ gameOver(); return; }
+        }
+        state = 'aim';
+      }
+    }
+    // advance floating score popups (always, regardless of state)
+    for(const p of popups){ p.life -= 0.025; p.y -= 0.7; }
+    popups = popups.filter(p=>p.life>0);
+  }
+  let resolveTimer = 0;
+
+  function gameOver(){
+    state='over';
+    if(score>hi){ hi=score; hiEl.textContent=hi; try{localStorage.setItem('bouncy_hi',hi);}catch(e){} }
+    ovTitle.textContent='GAME OVER';
+    ovText.innerHTML = `本局得分 <span class="big">${score}</span><br>最高 ${hi} · 用了 ${turn} 回合 · 攒到 ${ballCount} 颗球`;
+    startBtn.textContent='再来一局';
+    overlay.classList.remove('hidden');
+  }
+
+  // ---- render ----
+  function roundRect(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    // subtle grid
+    ctx.strokeStyle='rgba(61,242,255,0.05)';
+    ctx.lineWidth=1;
+    for(let c=1;c<COLS;c++){ ctx.beginPath();ctx.moveTo(c*CELL,0);ctx.lineTo(c*CELL,H);ctx.stroke(); }
+
+    // blocks
+    for(const b of blocks){
+      const s = CELL-7;
+      if(b.kind==='plus'){
+        ctx.save();
+        ctx.shadowColor='rgba(255,177,61,.8)'; ctx.shadowBlur=14;
+        ctx.fillStyle='#ffb13d';
+        ctx.beginPath(); ctx.arc(b.x,b.y,9,0,Math.PI*2); ctx.fill();
+        ctx.restore();
+        ctx.fillStyle='#06101f'; ctx.font='700 12px "Chakra Petch"';
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('+1', b.x, b.y+1);
+      } else {
+        const col = blockHpColor(b);
+        ctx.save();
+        ctx.shadowColor=col; ctx.shadowBlur=12;
+        ctx.fillStyle=col;
+        roundRect(b.x-s/2,b.y-s/2,s,s,8); ctx.fill();
+        ctx.restore();
+        ctx.fillStyle='rgba(0,0,0,.78)'; ctx.font='700 15px "Chakra Petch"';
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(b.hp, b.x, b.y+1);
+      }
+    }
+
+    // balls
+    for(const b of balls){
+      ctx.save();
+      ctx.shadowColor='rgba(61,242,255,.9)'; ctx.shadowBlur=12;
+      ctx.fillStyle='#eafdff';
+      ctx.beginPath(); ctx.arc(b.x,b.y,BALL_R,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    // launcher
+    ctx.save();
+    ctx.fillStyle='rgba(61,242,255,.9)';
+    ctx.shadowColor='rgba(61,242,255,.8)'; ctx.shadowBlur=10;
+    ctx.beginPath(); ctx.arc(launchX, LAUNCH_Y, 9, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+    // ball count label
+    ctx.fillStyle='rgba(232,236,255,.9)';
+    ctx.font='700 13px "Chakra Petch"'; ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.fillText('×'+ballCount, launchX, LAUNCH_Y-14);
+
+    // aim guide
+    if(state==='aim' && aim){
+      const dir = aimDir();
+      if(dir){
+        ctx.setLineDash([2,9]); ctx.lineWidth=3; ctx.strokeStyle='rgba(255,77,141,.85)';
+        ctx.lineCap='round';
+        // simulate a few wall bounces
+        let px=launchX, py=LAUNCH_Y, vx=dir.x, vy=dir.y, len=0;
+        ctx.beginPath(); ctx.moveTo(px,py);
+        for(let i=0;i<260 && len<560;i++){
+          px+=vx*5; py+=vy*5; len+=5;
+          if(px<BALL_R){px=BALL_R;vx=Math.abs(vx);} if(px>W-BALL_R){px=W-BALL_R;vx=-Math.abs(vx);}
+          if(py<BALL_R){py=BALL_R;vy=Math.abs(vy);}
+          ctx.lineTo(px,py);
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
+
+    // floating score popups
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(const p of popups){
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life));
+      ctx.font='700 18px "Chakra Petch"';
+      ctx.fillStyle='#ffe89a';
+      ctx.shadowColor='rgba(255,177,61,.9)'; ctx.shadowBlur=10;
+      ctx.fillText(p.val, p.x, p.y);
+      ctx.restore();
+    }
+  }
+
+  function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+  loop();
+})();
+</script>
+</body>
+</html>
