@@ -35,7 +35,10 @@
     min-height:100%;padding:14px;gap:12px;overflow:hidden;
   }
   .frame{
-    width:min(94vw, 440px);
+    /* 宽度同时受视口宽度 + 可用高度约束，保证拉高画布后不会被 overflow:hidden 裁掉 */
+    /* 480/1056 = W/H，按可用屏高反算出不溢出的最大宽度；110px 预留给 header/hint/padding */
+    width:min(94vw, calc((100vh - 110px) * 480 / 1056), 440px);
+    width:min(94vw, calc((100dvh - 110px) * 480 / 1056), 440px);
     display:flex;flex-direction:column;gap:10px;
   }
   header{display:flex;align-items:flex-end;justify-content:space-between;}
@@ -118,16 +121,25 @@
   const COLS = 10;
   const W = 480;
   const CELL = W / COLS;            // 48
-  const H = 720;
+  const H = 1056;                   // 22 行（CELL 不变），比例≈9:19.8 贴近主流手机
   const ROWS_TOP = 0;               // first row flush to ceiling (no gap channel)
   const LAUNCH_Y = H - 26;          // launcher line
   const BALL_R = 8;
-  const SPEED = 12;
+  const SPEED = 18;                 // 球速；子步进碰撞检测保证提速不穿模
   const cvsScale = 2;               // crispness
   cvs.width = W * cvsScale;
   cvs.height = H * cvsScale;
   cvs.style.aspectRatio = W + '/' + H;
   ctx.scale(cvsScale, cvsScale);
+
+  // ---- difficulty knobs (数字越大越难) ----
+  const HP_BASE       = 0.5;   // 方块数字随回合的线性增量
+  const HP_ACCEL      = 0.08;  // 随回合的二次加速增量 —— 让数字越长越快
+  const HP_MARGIN     = 1;     // 每行最硬方块至少比当前球数多这么多 → 单回合清不完
+  const HP_COLOR_SPAN = 32;    // 颜色绿→红覆盖的数字跨度（越大变红越慢）
+  const MIN_ANGLE_DEG = 30;    // 最小入射角(与水平线夹角)；越小越容易够到方块、难度越低
+  const MIN_ANGLE     = MIN_ANGLE_DEG * Math.PI / 180;
+  const AIM_MAX_RATIO = 1 / Math.tan(MIN_ANGLE);   // |水平|/|竖直| 上限 = cot(角度)
 
   // ---- state ----
   let blocks = [];     // {x,y,hp,kind:'block'|'plus'}
@@ -182,13 +194,17 @@
   function spawnRow(){
     turn++;
     for(const b of blocks) b.y += CELL;
-    const maxHp = Math.max(1, Math.floor(turn * 0.7) + 1);
-    let placed = 0;
+    // 加速增长：线性项 + 二次项；再确保强于当前球数，单回合清不完
+    const accel   = turn * HP_BASE + turn * turn * HP_ACCEL;
+    const hpCap   = Math.max(2, Math.round(accel), ballCount + HP_MARGIN);
+    const hpFloor = Math.max(1, Math.round(hpCap * 0.45));
+    let placed = 0, toughIdx = -1, toughest = 0;
     for(let c=0;c<COLS;c++){
       const r = Math.random();
       if(r < 0.62){
-        const hp = 1 + Math.floor(Math.random()*maxHp);
+        const hp = hpFloor + Math.floor(Math.random()*(hpCap - hpFloor + 1));
         blocks.push({kind:'block', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2, hp, hpMax:hp});
+        if(hp > toughest){ toughest = hp; toughIdx = blocks.length-1; }
         placed++;
       } else if(r < 0.78){
         blocks.push({kind:'plus', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2});
@@ -196,12 +212,18 @@
     }
     if(placed===0){ // guarantee at least one block
       const c = Math.floor(Math.random()*COLS);
-      blocks.push({kind:'block', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2, hp:1, hpMax:1});
+      blocks.push({kind:'block', col:c, x:c*CELL+CELL/2, y:ROWS_TOP+CELL/2, hp:hpCap, hpMax:hpCap});
+      toughIdx = blocks.length-1; toughest = hpCap;
+    }
+    // 保证本行至少有一个方块的数字 > 当前球数 —— 一回合弹不完，游戏终会 game over
+    if(toughIdx >= 0 && toughest <= ballCount){
+      const b = blocks[toughIdx];
+      b.hp = b.hpMax = ballCount + HP_MARGIN;
     }
   }
 
   function blockHpColor(b){
-    const t = Math.min(1, (b.hp-1)/14);
+    const t = Math.min(1, (b.hp-1)/HP_COLOR_SPAN);   // 颜色变化更慢
     const hue = 158 - t*158;        // green -> red
     return `hsl(${hue},85%,55%)`;
   }
@@ -231,14 +253,24 @@
   }
   let fireVel = {x:0,y:-1};
 
+  // 入射角必须与水平线成 ≥ MIN_ANGLE_DEG°，否则锁定到该角度，防止近水平无限弹的 trick
   function aimDir(){
     if(!aim) return null;
     let dx = aim.x - launchX;
     let dy = aim.y - LAUNCH_Y;
-    if(dy > -8) dy = -8;            // never shoot downward/flat
+    if(Math.hypot(dx,dy) < 6) return null;                              // 先用原始拖动判“点按”
+    if(dy > -1) dy = -1;                                               // 必须向上
+    if(Math.abs(dx) > Math.abs(dy)*AIM_MAX_RATIO)                      // 太平 → 锁定到最小角
+      dx = Math.sign(dx) * Math.abs(dy) * AIM_MAX_RATIO;
     const len = Math.hypot(dx,dy);
-    if(len < 6) return null;
     return { x: dx/len, y: dy/len };
+  }
+  // 当前拖动是否落在 < MIN_ANGLE_DEG° 的禁区（用于显示扇形指示器）
+  function aimBlocked(){
+    if(!aim) return false;
+    const dx = aim.x - launchX;
+    const dy = Math.min(aim.y - LAUNCH_Y, -1);
+    return Math.hypot(aim.x-launchX, aim.y-LAUNCH_Y) >= 6 && Math.abs(dx) > Math.abs(dy)*AIM_MAX_RATIO;
   }
 
   stage.addEventListener('mousedown', onDown);
@@ -371,6 +403,28 @@
     ctx.closePath();
   }
 
+  // 角度指示器：拖动太平时，高亮“可瞄准”的扇形范围（上方锥形）+ 边界 + 文案
+  function drawAngleGuard(){
+    const R = 96, lx = launchX, ly = LAUNCH_Y;
+    const cs = Math.cos(MIN_ANGLE), sn = Math.sin(MIN_ANGLE);
+    ctx.save();
+    // 高亮上方“可瞄准”扇形：从右边界经正上方扫到左边界（两侧各到 MIN_ANGLE）
+    ctx.fillStyle = 'rgba(61,242,255,.16)';
+    ctx.beginPath(); ctx.moveTo(lx,ly);
+    ctx.arc(lx,ly,R, -MIN_ANGLE, -(Math.PI-MIN_ANGLE), true);   // 右边界 → 上 → 左边界
+    ctx.closePath(); ctx.fill();
+    // 扇形两条边界线（青）
+    ctx.strokeStyle = 'rgba(61,242,255,.9)'; ctx.lineWidth = 2; ctx.setLineDash([]); ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lx - R*cs, ly - R*sn); ctx.lineTo(lx, ly); ctx.lineTo(lx + R*cs, ly - R*sn);
+    ctx.stroke();
+    // 文案
+    ctx.fillStyle = 'rgba(180,245,255,.95)';
+    ctx.font = '700 13px "Chakra Petch"'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText('可瞄准范围 ≥ ' + MIN_ANGLE_DEG + '°', lx, ly - R - 6);
+    ctx.restore();
+  }
+
   function draw(){
     ctx.clearRect(0,0,W,H);
     // subtle grid
@@ -426,13 +480,16 @@
     // aim guide
     if(state==='aim' && aim){
       const dir = aimDir();
+      const blocked = aimBlocked();
+      if(blocked) drawAngleGuard();          // 太平：高亮可瞄准扇形，方向已锁定到扇形边界
       if(dir){
-        ctx.setLineDash([2,9]); ctx.lineWidth=3; ctx.strokeStyle='rgba(255,77,141,.85)';
+        ctx.setLineDash([2,9]); ctx.lineWidth=3;
+        ctx.strokeStyle = blocked ? 'rgba(255,180,60,.95)' : 'rgba(255,77,141,.85)';  // 锁定时用琥珀色
         ctx.lineCap='round';
         // simulate a few wall bounces
         let px=launchX, py=LAUNCH_Y, vx=dir.x, vy=dir.y, len=0;
         ctx.beginPath(); ctx.moveTo(px,py);
-        for(let i=0;i<260 && len<560;i++){
+        for(let i=0;i<360 && len<900;i++){
           px+=vx*5; py+=vy*5; len+=5;
           if(px<BALL_R){px=BALL_R;vx=Math.abs(vx);} if(px>W-BALL_R){px=W-BALL_R;vx=-Math.abs(vx);}
           if(py<BALL_R){py=BALL_R;vy=Math.abs(vy);}
